@@ -29,12 +29,15 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("keystore")
+            // Usa a assinatura padrão de debug do Android.
+            // Não depende de app/keystore.jks.
         }
+
         release {
             signingConfig = signingConfigs.getByName("keystore")
             isMinifyEnabled = true
             isShrinkResources = true
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -42,14 +45,15 @@ android {
         }
     }
 
-// AGP 9 removed the old applicationVariants API; this is the replacement.
-androidComponents {
-    onVariants { variant ->
-        variant.outputs.forEach { output ->
-            output.outputFileName.set("dirtyfrag.apk")
+    // AGP 9: configura o nome do APK gerado.
+    androidComponents {
+        onVariants { variant ->
+            variant.outputs.forEach { output ->
+                output.outputFileName.set("dirtyfrag.apk")
+            }
         }
     }
-}
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -61,8 +65,6 @@ androidComponents {
 
     buildFeatures {
         viewBinding = true
-        // The toolbar version pill reads BuildConfig.VERSION_NAME, so the pill
-        // can never fall behind versionName again.
         buildConfig = true
     }
 
