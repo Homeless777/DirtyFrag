@@ -8,8 +8,6 @@ on:
     branches: [master, main]
   workflow_dispatch:
 
-# The tag push creates the GitHub Release, which needs contents: write. Without this the
-# default token is read-only and softprops/action-gh-release fails with HTTP 403.
 permissions:
   contents: write
 
@@ -63,19 +61,12 @@ jobs:
       - name: Validate signing config
         if: false
         run: |
-          if [ "${{ secrets.KEYSTORE }}" = "" ]; then
-            echo "::error::Signing secrets not configured. KEYSTORE secret is required for release builds."
-            exit 1
-          fi
+          echo "Signing skipped"
 
       - name: Create keystore
-        if: github.event_name != 'pull_request'
+        if: false
         run: |
-          # app/build.gradle.kts signs with app/keystore.jks (gitignored; the README
-          # documents how to generate it), so the KEYSTORE secret has to be decoded
-          # into app/, not into the repo root the upstream workflow used.
-          echo ${{ secrets.KEYSTORE }} | base64 --decode > app/keystore.jks
-          ls -l app/keystore.jks
+          echo "Keystore skipped"
 
       - name: Download DF LKMs
         uses: actions/download-artifact@v7
@@ -92,40 +83,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
 
       - name: Build DFRoot APK
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            ./gradlew :app:assembleDebug
-          else
-            ./gradlew :app:assembleDebug
-          fi
-
-      - name: Stage release asset
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          # app/build.gradle.kts always writes app/build/outputs/apk/release/dirtyfrag.apk,
-          # so the versioned asset name comes from the tag (v1.11 -> DirtyFrag-v1.11.apk).
-          cp app/build/outputs/apk/release/dirtyfrag.apk "DirtyFrag-${GITHUB_REF_NAME}.apk"
-          ls -l DirtyFrag-*.apk
+        run: ./gradlew :app:assembleDebug
 
       - name: Upload DFRoot APK
         uses: actions/upload-artifact@v7
         with:
           name: DFRoot
-          path: |
-            app/build/outputs/apk/release/dirtyfrag.apk
-            app/build/outputs/apk/debug/dirtyfrag.apk
-
-      - name: Build release notes from CHANGELOG
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          # Take just the section for this tag: v1.11 -> the "## 1.11" block.
-          VER="${GITHUB_REF_NAME#v}"
-          awk -v ver="$VER" '/^## /{p = ($0 == "## " ver); next} p' CHANGELOG.md > RELEASE_NOTES.md
-          wc -l RELEASE_NOTES.md
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: DirtyFrag-*.apk
-          body_path: RELEASE_NOTES.md
+          path: app/build/outputs/apk/debug/dirtyfrag.apk
