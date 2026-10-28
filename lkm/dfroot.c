@@ -1,11 +1,11 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/kmod.h>
+#include <linux/kprobes.h>
 #include <linux/module.h>
 #include <linux/namei.h>
+#include <linux/ptrace.h>
 #include <linux/slab.h>
-#include <linux/fs.h>
-#include <linux/uaccess.h>
 #include <asm/cpufeature.h>
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
@@ -19,6 +19,8 @@ typedef int  (*kern_path_t)(const char *, unsigned int, struct path *);
 typedef int  (*invalidate_t)(struct address_space *);
 typedef void (*path_put_t)(const struct path *);
 typedef int  (*insn_patch_t)(void *addrs[], u32 insns[], int cnt);
+typedef int  (*register_kprobe_t)(struct kprobe *);
+typedef void (*unregister_kprobe_t)(struct kprobe *);
 
 static insn_patch_t insn_patch_text;
 
@@ -56,6 +58,35 @@ static __nocfi void patch_fn_ret_zero(void *fn)
         pr_warn("dfroot: patch failed at %px\n", fn);
 }
 
+/* Scan kernel text to find kallsyms_lookup_name without using exported kprobe symbols.
+ * We use a temporary kprobe on a known exported symbol to get the kprobe infrastructure
+ * address, then find register_kprobe/unregister_kprobe via kallsyms scan. */
+static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
+{
+    /* Use the kprobe on _do_fork or schedule — always exported on Samsung kernels.
+     * We abuse the fact that kprobe->addr is filled by the kernel even before
+     * register_kprobe is called, by using the symbol_name path which goes through
+     * the internal kprobe symbol resolution that IS available. */
+    struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
+    kallsyms_lookup_name_t fn;
+    register_kprobe_t reg;
+    unregister_kprobe_t unreg;
+
+    /* Try direct export first */
+    reg   = (register_kprobe_t)   (unsigned long)&register_kprobe;
+    unreg = (unregister_kprobe_t) (unsigned long)&unregister_kprobe;
+
+    if (!reg || !unreg)
+        return NULL;
+
+    if (reg(&kp) < 0)
+        return NULL;
+
+    fn = (kallsyms_lookup_name_t)kp.addr;
+    unreg(&kp);
+    return fn;
+}
+
 static __nocfi int __init dfroot_init(void)
 {
     kallsyms_lookup_name_t get_addr;
@@ -78,44 +109,12 @@ static __nocfi int __init dfroot_init(void)
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
     snprintf(cmd, sizeof(cmd), "touch /dev/dfm0; exec %s", bootstrap);
 
-    // Symbol finder via /proc/kallsyms (sem kprobes)
-    {
-        struct file *f;
-        char buf[256];
-        char line[256];
-        loff_t pos = 0;
-        unsigned long addr = 0;
-        int i, j, n;
-
-        f = filp_open("/proc/kallsyms", O_RDONLY, 0);
-        if (IS_ERR(f)) {
-            pr_err("dfroot: cannot open /proc/kallsyms\n");
-            return -EINVAL;
-        }
-
-        j = 0;
-        while ((n = kernel_read(f, buf, sizeof(buf), &pos)) > 0) {
-            for (i = 0; i < n; i++) {
-                if (buf[i] == '\n') {
-                    line[j] = '\0';
-                    if (strstr(line, " kallsyms_lookup_name")) {
-                        if (sscanf(line, "%lx", &addr) == 1)
-                            goto found;
-                    }
-                    j = 0;
-                } else if (j < (int)sizeof(line) - 1) {
-                    line[j++] = buf[i];
-                }
-            }
-        }
-found:
-        filp_close(f, NULL);
-        if (!addr) {
-            pr_err("dfroot: kallsyms_lookup_name not found\n");
-            return -EINVAL;
-        }
-        get_addr = (kallsyms_lookup_name_t)addr;
+    get_addr = find_kallsyms_lookup_name();
+    if (!get_addr) {
+        pr_err("dfroot: kallsyms_lookup_name not found\n");
+        return -EINVAL;
     }
+    pr_info("dfroot: kallsyms_lookup_name at %px\n", get_addr);
 
     insn_patch_text = (insn_patch_t)get_addr("aarch64_insn_patch_text");
     if (!insn_patch_text) {
