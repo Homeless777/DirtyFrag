@@ -20,6 +20,8 @@ typedef int  (*kern_path_t)(const char *, unsigned int, struct path *);
 typedef int  (*invalidate_t)(struct address_space *);
 typedef void (*path_put_t)(const struct path *);
 typedef int  (*insn_patch_t)(void *addrs[], u32 insns[], int cnt);
+typedef int  (*register_kprobe_t)(struct kprobe *p);
+typedef void (*unregister_kprobe_t)(struct kprobe *p);
 
 static insn_patch_t insn_patch_text;
 
@@ -57,25 +59,45 @@ static __nocfi void patch_fn_ret_zero(void *fn)
         pr_warn("dfroot: patch failed at %px\n", fn);
 }
 
-struct dfroot_ksym {
-    int value_offset;
-    int name_offset;
-};
-
+/*
+ * Use a kprobe on printk (always exported) to get a kernel address,
+ * then scan nearby memory for kallsyms_lookup_name string and function.
+ * This avoids any problematic RELA relocations.
+ */
 static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
 {
-    extern const struct dfroot_ksym __start___ksymtab[] __attribute__((weak));
-    extern const struct dfroot_ksym __stop___ksymtab[] __attribute__((weak));
-    const struct dfroot_ksym *sym;
+    /* printk is always exported — use it as our anchor */
+    unsigned long anchor = (unsigned long)printk;
+    unsigned long base, end;
+    unsigned long *ptr;
 
-    if (!__start___ksymtab || !__stop___ksymtab)
-        return NULL;
+    /* Kernel text is typically within 128MB of any exported symbol */
+    base = anchor & ~0x7FFFFFFUL;
+    end  = base + 0x8000000UL;
 
-    for (sym = __start___ksymtab; sym < __stop___ksymtab; sym++) {
-        const char *name = (const char *)&sym->name_offset + sym->name_offset;
-        if (strcmp(name, "kallsyms_lookup_name") == 0) {
-            unsigned long addr = (unsigned long)&sym->value_offset + sym->value_offset;
-            return (kallsyms_lookup_name_t)addr;
+    /* Scan for kallsyms_lookup_name by looking for its name string
+     * and correlating with the ksymtab entries */
+    for (ptr = (unsigned long *)base; ptr < (unsigned long *)end; ptr++) {
+        /* Look for a pointer that could be kallsyms_lookup_name:
+         * it must be in kernel text range and aligned */
+        if ((*ptr & 0xFFFFFFFF00000000UL) == (anchor & 0xFFFFFFFF00000000UL) &&
+            (*ptr & 0xFFF) == 0) {
+            /* Check if this looks like a function by verifying
+             * the first instruction is a valid aarch64 prologue */
+            u32 first_insn = *(u32 *)(void *)*ptr;
+            if (first_insn == 0xD503233F || /* PACIASP */
+                first_insn == 0xD503237F || /* PACIBSP */
+                first_insn == 0xD503241F || /* BTI     */
+                (first_insn & 0xFFC003FF) == 0xD10003FF) { /* SUB SP,SP,# */
+                /* Validate by checking the name nearby */
+                char *p = (char *)ptr - 64;
+                int i;
+                for (i = 0; i < 128; i++, p++) {
+                    if (!memcmp(p, "kallsyms_lookup_name", 20)) {
+                        return (kallsyms_lookup_name_t)*ptr;
+                    }
+                }
+            }
         }
     }
     return NULL;
@@ -105,7 +127,7 @@ static __nocfi int __init dfroot_init(void)
 
     get_addr = find_kallsyms_lookup_name();
     if (!get_addr) {
-        pr_err("dfroot: kallsyms_lookup_name not found in ksymtab\n");
+        pr_err("dfroot: kallsyms_lookup_name not found\n");
         return -EINVAL;
     }
     pr_info("dfroot: kallsyms_lookup_name at %px\n", get_addr);
@@ -145,7 +167,7 @@ static __nocfi int __init dfroot_init(void)
         pr_err("dfroot: oplus_exe_block_ret_handler not found, skipping\n");
     else {
         patch_fn_ret_zero(oplus_exe_fn);
-        pr_info("dfroot: oplus_exe_block_ret_hair patched\n");
+        pr_info("dfroot: oplus_exe_block_ret_handler patched\n");
     }
 
     oplus_root_fn = (void *)(mkln ? mkln("oplus_root_check_post_handler") : 0);
