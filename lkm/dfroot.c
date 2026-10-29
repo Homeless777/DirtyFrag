@@ -20,10 +20,53 @@ typedef int  (*kern_path_t)(const char *, unsigned int, struct path *);
 typedef int  (*invalidate_t)(struct address_space *);
 typedef void (*path_put_t)(const struct path *);
 typedef int  (*insn_patch_t)(void *addrs[], u32 insns[], int cnt);
-typedef int  (*register_kprobe_t)(struct kprobe *p);
-typedef void (*unregister_kprobe_t)(struct kprobe *p);
 
 static insn_patch_t insn_patch_text;
+static kallsyms_lookup_name_t kln_addr = NULL;
+
+#define KPROBE_PRE_HANDLER(fname) static int __kprobes fname(struct kprobe *p, struct pt_regs *regs)
+
+KPROBE_PRE_HANDLER(handler_pre0) { return 0; }
+KPROBE_PRE_HANDLER(handler_pre1) {
+    kln_addr = (kallsyms_lookup_name_t)(--regs->pc);
+    return 0;
+}
+
+static int do_register_kprobe(struct kprobe *kp, char *symbol_name, void *handler)
+{
+    int ret;
+    kp->symbol_name = symbol_name;
+    kp->pre_handler = handler;
+    ret = register_kprobe(kp);
+    return ret;
+}
+
+static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
+{
+    struct kprobe kp0, kp1;
+    int ret;
+
+    memset(&kp0, 0, sizeof(kp0));
+    memset(&kp1, 0, sizeof(kp1));
+
+    ret = do_register_kprobe(&kp0, "kallsyms_lookup_name", handler_pre0);
+    if (ret < 0) {
+        pr_err("dfroot: kprobe0 register failed: %d\n", ret);
+        return NULL;
+    }
+
+    ret = do_register_kprobe(&kp1, "kallsyms_lookup_name", handler_pre1);
+    if (ret < 0) {
+        unregister_kprobe(&kp0);
+        pr_err("dfroot: kprobe1 register failed: %d\n", ret);
+        return NULL;
+    }
+
+    unregister_kprobe(&kp0);
+    unregister_kprobe(&kp1);
+
+    return kln_addr;
+}
 
 static __nocfi void patch_fn_ret_zero(void *fn)
 {
@@ -57,50 +100,6 @@ static __nocfi void patch_fn_ret_zero(void *fn)
 
     if (insn_patch_text(addrs, insns, 2))
         pr_warn("dfroot: patch failed at %px\n", fn);
-}
-
-/*
- * Use a kprobe on printk (always exported) to get a kernel address,
- * then scan nearby memory for kallsyms_lookup_name string and function.
- * This avoids any problematic RELA relocations.
- */
-static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
-{
-    /* printk is always exported — use it as our anchor */
-    unsigned long anchor = (unsigned long)THIS_MODULE->init;
-    unsigned long base, end;
-    unsigned long *ptr;
-
-    /* Kernel text is typically within 128MB of any exported symbol */
-    base = anchor & ~0x7FFFFFFUL;
-    end  = base + 0x8000000UL;
-
-    /* Scan for kallsyms_lookup_name by looking for its name string
-     * and correlating with the ksymtab entries */
-    for (ptr = (unsigned long *)base; ptr < (unsigned long *)end; ptr++) {
-        /* Look for a pointer that could be kallsyms_lookup_name:
-         * it must be in kernel text range and aligned */
-        if ((*ptr & 0xFFFFFFFF00000000UL) == (anchor & 0xFFFFFFFF00000000UL) &&
-            (*ptr & 0xFFF) == 0) {
-            /* Check if this looks like a function by verifying
-             * the first instruction is a valid aarch64 prologue */
-            u32 first_insn = *(u32 *)(void *)*ptr;
-            if (first_insn == 0xD503233F || /* PACIASP */
-                first_insn == 0xD503237F || /* PACIBSP */
-                first_insn == 0xD503241F || /* BTI     */
-                (first_insn & 0xFFC003FF) == 0xD10003FF) { /* SUB SP,SP,# */
-                /* Validate by checking the name nearby */
-                char *p = (char *)ptr - 64;
-                int i;
-                for (i = 0; i < 128; i++, p++) {
-                    if (!memcmp(p, "kallsyms_lookup_name", 20)) {
-                        return (kallsyms_lookup_name_t)*ptr;
-                    }
-                }
-            }
-        }
-    }
-    return NULL;
 }
 
 static __nocfi int __init dfroot_init(void)
@@ -197,14 +196,13 @@ static __nocfi int __init dfroot_init(void)
     umh_setup = (umh_setup_t)get_addr("call_usermodehelper_setup");
     umh_exec  = (umh_exec_t)get_addr("call_usermodehelper_exec");
     if (!umh_setup || !umh_exec) {
-        pr_err("dfroot: usermodehelper symbols missing (setup=%px exec=%px)\n",
-               umh_setup, umh_exec);
+        pr_err("dfroot: usermodehelper symbols missing\n");
         return -EINVAL;
     }
 
     info = umh_setup(sh, argv, envp, GFP_KERNEL, NULL, NULL, NULL);
     if (!info) {
-        pr_err("dfroot: usermodehelper_setup: returned NULL\n");
+        pr_err("dfroot: usermodehelper_setup returned NULL\n");
         return -EINVAL;
     }
     ((struct subprocess_info *)info)->path = sh;
