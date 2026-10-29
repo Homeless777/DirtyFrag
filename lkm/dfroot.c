@@ -57,11 +57,19 @@ static __nocfi void patch_fn_ret_zero(void *fn)
         pr_warn("dfroot: patch failed at %px\n", fn);
 }
 
+struct dfroot_ksym {
+    int value_offset;
+    int name_offset;
+};
+
 static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
 {
-    extern const struct kernel_symbol __start___ksymtab[];
-    extern const struct kernel_symbol __stop___ksymtab[];
-    const struct kernel_symbol *sym;
+    extern const struct dfroot_ksym __start___ksymtab[] __attribute__((weak));
+    extern const struct dfroot_ksym __stop___ksymtab[] __attribute__((weak));
+    const struct dfroot_ksym *sym;
+
+    if (!__start___ksymtab || !__stop___ksymtab)
+        return NULL;
 
     for (sym = __start___ksymtab; sym < __stop___ksymtab; sym++) {
         const char *name = (const char *)&sym->name_offset + sym->name_offset;
@@ -137,7 +145,7 @@ static __nocfi int __init dfroot_init(void)
         pr_err("dfroot: oplus_exe_block_ret_handler not found, skipping\n");
     else {
         patch_fn_ret_zero(oplus_exe_fn);
-        pr_info("dfroot: oplus_exe_block_ret_handler patched\n");
+        pr_info("dfroot: oplus_exe_block_ret_hair patched\n");
     }
 
     oplus_root_fn = (void *)(mkln ? mkln("oplus_root_check_post_handler") : 0);
