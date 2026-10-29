@@ -57,11 +57,6 @@ static __nocfi void patch_fn_ret_zero(void *fn)
         pr_warn("dfroot: patch failed at %px\n", fn);
 }
 
-struct kernel_symbol {
-    int value_offset;
-    int name_offset;
-};
-
 static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
 {
     extern const struct kernel_symbol __start___ksymtab[];
