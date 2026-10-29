@@ -67,7 +67,7 @@ static __nocfi void patch_fn_ret_zero(void *fn)
 static kallsyms_lookup_name_t find_kallsyms_lookup_name(void)
 {
     /* printk is always exported — use it as our anchor */
-    unsigned long anchor = (unsigned long)_printk;
+    unsigned long anchor = (unsigned long)__kmalloc;
     unsigned long base, end;
     unsigned long *ptr;
 
