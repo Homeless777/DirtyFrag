@@ -19,7 +19,6 @@ jobs:
       matrix:
         kmi:
           - android12-5.10
-          - android13-5.10
           - android13-5.15
           - android14-5.15
           - android14-6.1
@@ -74,6 +73,9 @@ jobs:
           pattern: df-lkm-*
           merge-multiple: true
           path: app/src/main/jni/ko/
+
+      - name: Copy pre-built android13-5.10 ko
+        run: cp app/src/main/jni/ko/prebuilt/dfroot-android13-5.10.ko app/src/main/jni/ko/dfroot-android13-5.10.ko
 
       - uses: actions/setup-java@v6
         with:
