@@ -72,10 +72,10 @@ jobs:
         with:
           pattern: df-lkm-*
           merge-multiple: true
-          path: app/src/main/jni/ko/
+          path: app/src/main/java/df/root/prebuilt
 
       - name: Copy pre-built android13-5.10 ko
-        run: cp app/src/main/jni/ko/prebuilt/dfroot-android13-5.10.ko app/src/main/jni/ko/dfroot-android13-5.10.ko
+        run: cp app/src/main/java/df/root/prebuilt/dfroot-android13-5.10.ko app/src/main/jni/ko/dfroot-android13-5.10.ko
 
       - uses: actions/setup-java@v6
         with:
